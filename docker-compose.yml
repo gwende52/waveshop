@@ -1,0 +1,105 @@
+services:
+  waveshop-db:
+    image: postgres:17
+    container_name: "waveshop-db"
+    hostname: waveshop-db
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${DATABASE_USER}
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
+      - POSTGRES_DB=${DATABASE_NAME}
+      - TZ=UTC
+
+    volumes:
+      - waveshop-db-data:/var/lib/postgresql/data
+
+    networks:
+      - remnawave-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 10s
+      retries: 3
+
+
+  waveshop-redis:
+    image: valkey/valkey:9-alpine
+    container_name: "waveshop-redis"
+    hostname: waveshop-redis
+    restart: unless-stopped
+
+    command: [ "--requirepass", "${REDIS_PASSWORD}" ]
+
+    volumes:
+      - waveshop-redis-data:/data
+
+    networks:
+      - remnawave-network
+
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 3
+
+
+  waveshop:
+    &waveshop
+    image: ghcr.io/snoups/waveshop:latest
+    container_name: "waveshop"
+    hostname: waveshop
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      RESET_ASSETS: "${RESET_ASSETS:-false}"
+
+    depends_on:
+      waveshop-db:
+        condition: service_healthy
+      waveshop-redis:
+        condition: service_healthy
+
+    volumes:
+      - ./logs:/opt/waveshop/logs
+      - ./assets:/opt/waveshop/assets
+
+    networks:
+      - remnawave-network
+
+
+  waveshop-taskiq-worker:
+    <<: *waveshop
+    container_name: "waveshop-taskiq-worker"
+    hostname: waveshop-taskiq-worker
+    command: taskiq worker src.infrastructure.taskiq.worker:worker
+      --tasks-pattern src/infrastructure/taskiq/tasks -fsd
+
+    depends_on:
+      waveshop-redis:
+        condition: service_healthy
+      waveshop-db:
+        condition: service_healthy
+
+
+networks:
+  remnawave-network:
+    name: remnawave-network
+    driver: bridge
+    external: false
+
+volumes:
+  waveshop-db-data:
+    name: waveshop-db-data
+    driver: local
+    external: false
+
+  waveshop-redis-data:
+    name: waveshop-redis-data
+    driver: local
+    external: false
